@@ -1,0 +1,650 @@
+﻿<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A-Frame Space Planets</title>
+    <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+    <script>
+      AFRAME.registerComponent("starfield", {
+        init: function () {
+          var group = document.createElement("a-entity");
+          for (var i = 0; i < 500; i += 1) {
+            var star = document.createElement("a-sphere");
+            var radius = 70;
+            var phi = Math.random() * Math.PI * 2;
+            var costheta = Math.random() * 2 - 1;
+            var theta = Math.acos(costheta);
+            var x = radius * Math.sin(theta) * Math.cos(phi);
+            var y = radius * Math.sin(theta) * Math.sin(phi);
+            var z = radius * Math.cos(theta);
+
+            star.setAttribute("position", x + " " + y + " " + z);
+            star.setAttribute("radius", 0.06 + Math.random() * 0.06);
+            star.setAttribute("color", "#fef9c3");
+            star.setAttribute("material", "shader: flat; emissive: #fef9c3; emissiveIntensity: 1;");
+            group.appendChild(star);
+          }
+          this.el.appendChild(group);
+        },
+      });
+
+      AFRAME.registerComponent("scroll-zoom", {
+        schema: {
+          minDist: { type: "number", default: 6.5 },
+          maxDist: { type: "number", default: 60 },
+          speed: { type: "number", default: 0.012 },
+        },
+        init: function () {
+          var el = this.el;
+          var pos = el.getAttribute("position");
+          var Vector3 = THREE.Vector3 || AFRAME.THREE.Vector3;
+          var dir = new Vector3(pos.x, pos.y, pos.z);
+          this.currentDist = dir.length();
+          this.targetDist = this.currentDist;
+          this.dirNorm = dir.clone().normalize();
+
+          var self = this;
+          this.onWheel = function (e) {
+            if (window.isLandedOnPlanet) return;
+            e.preventDefault();
+            var delta = e.deltaY * self.data.speed;
+            self.targetDist = Math.min(
+              Math.max(self.targetDist + delta, self.data.minDist),
+              self.data.maxDist
+            );
+          };
+
+          window.addEventListener("wheel", this.onWheel, { passive: false });
+        },
+        tick: function () {
+          if (window.isLandedOnPlanet) {
+            this.currentDist = 22.8035;
+            this.targetDist = 22.8035;
+            return;
+          }
+          if (Math.abs(this.targetDist - this.currentDist) > 0.005) {
+            this.currentDist += (this.targetDist - this.currentDist) * 0.1;
+            var newPos = this.dirNorm.clone().multiplyScalar(this.currentDist);
+            this.el.setAttribute("position", {
+              x: newPos.x,
+              y: newPos.y,
+              z: newPos.z,
+            });
+          }
+        },
+        remove: function () {
+          window.removeEventListener("wheel", this.onWheel);
+        },
+      });
+
+      AFRAME.registerComponent("planet-viewer", {
+        init: function () {
+          var self = this;
+          this.currentPlanet = null;
+          this.currentAnchor = null;
+          this.currentRadius = 0;
+          this.tempPos = new (THREE.Vector3 || AFRAME.THREE.Vector3)();
+          this.tempQuat = new (THREE.Quaternion || AFRAME.THREE.Quaternion)();
+
+          var returnBtn = document.getElementById("return-btn");
+
+          // 클릭 가능한 행성 및 큐브 면 요소들에 이벤트 등록
+          var clickables = document.querySelectorAll(".clickable");
+          clickables.forEach(function (el) {
+            el.addEventListener("click", function (evt) {
+              evt.stopPropagation();
+              var targetFace = el.getAttribute("data-face");
+              if (targetFace) {
+                self.landOnFace(targetFace);
+              } else {
+                self.landOnPlanet(el);
+              }
+            });
+            el.addEventListener("mouseenter", function () {
+              document.body.style.cursor = "pointer";
+            });
+            el.addEventListener("mouseleave", function () {
+              document.body.style.cursor = "default";
+            });
+          });
+
+          // 면 이동 버튼 이벤트 등록
+          var faceButtons = document.querySelectorAll(".face-btn");
+          faceButtons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var face = btn.getAttribute("data-target-face");
+              if (face) self.landOnFace(face);
+            });
+          });
+
+          // 행성 이동 버튼 이벤트 등록
+          var planetButtons = document.querySelectorAll(".planet-btn");
+          planetButtons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var targetPlanetId = btn.getAttribute("data-target-planet");
+              var planetEl = document.getElementById("planet-" + targetPlanetId);
+              if (planetEl) self.landOnPlanet(planetEl);
+            });
+          });
+
+          // 복귀 버튼 이벤트
+          if (returnBtn) {
+            returnBtn.addEventListener("click", function () {
+              self.returnToOverview();
+            });
+          }
+
+          // ESC 키 입력 시 전체 시점으로 복귀
+          window.addEventListener("keydown", function (e) {
+            if (e.key === "Escape" && (self.currentPlanet || self.currentAnchor)) {
+              self.returnToOverview();
+            }
+          });
+        },
+        landOnFace: function (faceKey) {
+          var faceEl = document.getElementById("face-" + faceKey);
+          if (!faceEl) return;
+          var anchor = faceEl.querySelector(".camera-anchor");
+          if (!anchor) return;
+
+          // 이전 착륙 행성이 있다면 원래 크기(1.0)로 복원
+          if (this.currentPlanet && this.currentPlanet.id !== "central-cube") {
+            this.currentPlanet.setAttribute(
+              "animation__scale",
+              "property: scale; to: 1 1 1; dur: 350; easing: easeOutQuad;"
+            );
+          }
+          this.currentPlanet = null;
+          this.currentAnchor = anchor;
+          window.isLandedOnPlanet = true;
+
+          var name = faceEl.getAttribute("data-name") || "큐브 면";
+          var badge = document.getElementById("planet-name-badge");
+          var returnBtn = document.getElementById("return-btn");
+
+          if (badge) badge.textContent = "🏢 " + name + "에 위치함";
+          if (returnBtn) returnBtn.style.display = "inline-block";
+
+          // UI 버튼 활성화 스타일 업데이트
+          document.querySelectorAll(".planet-btn").forEach(function (b) {
+            b.classList.remove("active");
+          });
+          document.querySelectorAll(".face-btn").forEach(function (b) {
+            if (b.getAttribute("data-target-face") === faceKey) {
+              b.classList.add("active");
+            } else {
+              b.classList.remove("active");
+            }
+          });
+
+          var cameraRig = document.getElementById("camera-rig");
+          var cameraEl = cameraRig.querySelector("a-camera");
+          if (cameraEl) {
+            cameraEl.setAttribute("camera", "fov", 75);
+            if (cameraEl.components["look-controls"]) {
+              var lc = cameraEl.components["look-controls"];
+              // 지면(검은 면)에서 실제 거대한 아파트를 올려다보는 현실적인 시점 각도(+0.12)
+              lc.pitchObject.rotation.x = 0.12;
+              lc.yawObject.rotation.y = 0;
+            }
+          }
+        },
+        landOnPlanet: function (planetEl) {
+          // 큐브 또는 건물 클릭 시 해당 면으로 이동 처리
+          var targetFace = planetEl.getAttribute("data-face");
+          if (targetFace) {
+            this.landOnFace(targetFace);
+            return;
+          }
+          if (planetEl.id === "central-cube") {
+            this.landOnFace("top");
+            return;
+          }
+
+          // 이전 착륙 행성이 있다면 원래 크기로 복원
+          if (this.currentPlanet && this.currentPlanet !== planetEl && this.currentPlanet.id !== "central-cube") {
+            this.currentPlanet.setAttribute(
+              "animation__scale",
+              "property: scale; to: 1 1 1; dur: 350; easing: easeOutQuad;"
+            );
+          }
+
+          this.currentPlanet = planetEl;
+          this.currentAnchor = null;
+          var radiusAttr = parseFloat(planetEl.getAttribute("radius"));
+          this.currentRadius = radiusAttr || 0.5;
+          window.isLandedOnPlanet = true;
+
+          // 착륙한 행성 2.2배 확대
+          planetEl.setAttribute(
+            "animation__scale",
+            "property: scale; to: 2.2 2.2 2.2; dur: 450; easing: easeOutQuad;"
+          );
+
+          var name = planetEl.getAttribute("data-name") || "행성";
+          var badge = document.getElementById("planet-name-badge");
+          var returnBtn = document.getElementById("return-btn");
+
+          if (badge) badge.textContent = "🪐 " + name + " 표면에 서 있습니다";
+          if (returnBtn) returnBtn.style.display = "inline-block";
+
+          // UI 버튼 활성화 스타일 업데이트
+          document.querySelectorAll(".face-btn").forEach(function (b) {
+            b.classList.remove("active");
+          });
+          document.querySelectorAll(".planet-btn").forEach(function (b) {
+            if (planetEl.id === "planet-" + b.getAttribute("data-target-planet")) {
+              b.classList.add("active");
+            } else {
+              b.classList.remove("active");
+            }
+          });
+
+          var cameraRig = document.getElementById("camera-rig");
+          cameraRig.object3D.quaternion.identity();
+          cameraRig.setAttribute("rotation", "0 0 0");
+
+          var cameraEl = cameraRig.querySelector("a-camera");
+          if (cameraEl) {
+            cameraEl.setAttribute("camera", "fov", 72);
+            if (cameraEl.components["look-controls"]) {
+              var lc = cameraEl.components["look-controls"];
+              lc.pitchObject.rotation.x = -0.22;
+              lc.yawObject.rotation.y = 0;
+            }
+          }
+        },
+        returnToOverview: function () {
+          if (this.currentPlanet && this.currentPlanet.id !== "central-cube") {
+            this.currentPlanet.setAttribute(
+              "animation__scale",
+              "property: scale; to: 1 1 1; dur: 350; easing: easeOutQuad;"
+            );
+          }
+          this.currentPlanet = null;
+          this.currentAnchor = null;
+          window.isLandedOnPlanet = false;
+
+          var badge = document.getElementById("planet-name-badge");
+          var returnBtn = document.getElementById("return-btn");
+          if (badge) badge.textContent = "🪐 우주 전체 조망 뷰";
+          if (returnBtn) returnBtn.style.display = "none";
+
+          document.querySelectorAll(".nav-btn").forEach(function (b) {
+            b.classList.remove("active");
+          });
+
+          var cameraRig = document.getElementById("camera-rig");
+          cameraRig.object3D.quaternion.identity();
+          cameraRig.setAttribute("position", "0 14 18");
+          cameraRig.setAttribute("rotation", "-38 0 0");
+
+          var cameraEl = cameraRig.querySelector("a-camera");
+          if (cameraEl) {
+            cameraEl.setAttribute("camera", "fov", 80);
+            if (cameraEl.components["look-controls"]) {
+              var lc = cameraEl.components["look-controls"];
+              lc.pitchObject.rotation.x = 0;
+              lc.yawObject.rotation.y = 0;
+            }
+          }
+        },
+        tick: function () {
+          var cameraRig = document.getElementById("camera-rig");
+          if (this.currentAnchor) {
+            // 큐브 각 면의 앵커 좌표 및 회전각을 실시간 추적하여 큐브 자전에 맞춰 위치 고정
+            this.currentAnchor.object3D.getWorldPosition(this.tempPos);
+            this.currentAnchor.object3D.getWorldQuaternion(this.tempQuat);
+            cameraRig.object3D.position.copy(this.tempPos);
+            cameraRig.object3D.quaternion.copy(this.tempQuat);
+          } else if (this.currentPlanet) {
+            this.currentPlanet.object3D.getWorldPosition(this.tempPos);
+            var scaleY = this.currentPlanet.object3D.scale.y || 1.0;
+            this.tempPos.y += this.currentRadius * scaleY + 0.06;
+            cameraRig.object3D.position.copy(this.tempPos);
+            cameraRig.object3D.quaternion.identity();
+          }
+        },
+      });
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #082f49;
+        user-select: none;
+      }
+
+      /* 하단 통합 탐색 & 컨트롤 HUD */
+      #navigation-hud {
+        position: fixed;
+        bottom: 22px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        background: rgba(8, 47, 73, 0.9);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(254, 249, 195, 0.35);
+        padding: 10px 20px;
+        border-radius: 28px;
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+      }
+
+      #location-bar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      #planet-name-badge {
+        font-size: 14px;
+        font-weight: 600;
+        color: #fef9c3;
+      }
+
+      .selector-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .hud-label {
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 600;
+        margin-right: 4px;
+      }
+
+      .nav-btn {
+        background: rgba(255, 255, 255, 0.12);
+        color: #f8fafc;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 5px 11px;
+        border-radius: 14px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .nav-btn:hover {
+        background: #fef9c3;
+        color: #082f49;
+        border-color: #fef9c3;
+        transform: translateY(-2px);
+      }
+
+      .planet-btn.active {
+        background: #eab308;
+        color: #0f172a;
+        border-color: #fef08a;
+        font-weight: 700;
+        box-shadow: 0 0 10px rgba(234, 179, 8, 0.5);
+      }
+
+      .face-btn.active {
+        background: #38bdf8;
+        color: #082f49;
+        border-color: #38bdf8;
+        font-weight: 700;
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+      }
+
+      #return-btn {
+        background: #fef9c3;
+        color: #082f49;
+        border: none;
+        padding: 5px 14px;
+        border-radius: 16px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      #return-btn:hover {
+        background: #ffffff;
+        transform: scale(1.05);
+      }
+
+      #return-btn:active {
+        transform: scale(0.97);
+      }
+
+      /* 상단 힌트 툴팁 */
+      #hint-hud {
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 9999;
+        background: rgba(8, 47, 73, 0.75);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(254, 249, 195, 0.25);
+        padding: 8px 18px;
+        border-radius: 30px;
+        color: #fef9c3;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 13px;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 상단 안내 툴팁 -->
+    <div id="hint-hud">✨ 원하는 행성 또는 큐브를 클릭하거나, 하단 버튼으로 탐색하세요</div>
+
+    <!-- 하단 통합 탐색 & 컨트롤 HUD -->
+    <div id="navigation-hud">
+      <div id="location-bar">
+        <span id="planet-name-badge">🪐 우주 전체 조망 뷰</span>
+        <button id="return-btn" style="display: none;">🚀 전체 시점으로</button>
+      </div>
+      <div id="planet-selector-bar" class="selector-row">
+        <span class="hud-label">🪐 행성 이동:</span>
+        <button class="nav-btn planet-btn" data-target-planet="white">⚪ 흰색</button>
+        <button class="nav-btn planet-btn" data-target-planet="sky">🩵 하늘색</button>
+        <button class="nav-btn planet-btn" data-target-planet="gray">🔘 회색</button>
+        <button class="nav-btn planet-btn" data-target-planet="purple">🟣 보라색</button>
+        <button class="nav-btn planet-btn" data-target-planet="yellow">🟡 노란색</button>
+      </div>
+      <div id="face-selector-bar" class="selector-row">
+        <span class="hud-label">🏢 큐브 이동:</span>
+        <button class="nav-btn face-btn" data-target-face="top">🔝 윗면</button>
+        <button class="nav-btn face-btn" data-target-face="front">☀️ 앞면</button>
+        <button class="nav-btn face-btn" data-target-face="right">➡️ 우측면</button>
+        <button class="nav-btn face-btn" data-target-face="back">🌙 뒷면</button>
+        <button class="nav-btn face-btn" data-target-face="left">⬅️ 좌측면</button>
+        <button class="nav-btn face-btn" data-target-face="bottom">🔻 아랫면</button>
+      </div>
+    </div>
+
+    <a-scene
+      background="color: #082f49"
+      cursor="rayOrigin: mouse"
+      raycaster="objects: .clickable"
+      planet-viewer
+    >
+      <a-entity starfield></a-entity>
+
+      <a-entity light="type: ambient; color: #667085; intensity: 0.8"></a-entity>
+      <a-entity
+        light="type: point; color: #ffffff; intensity: 1.4; distance: 120"
+        position="0 10 10"
+      ></a-entity>
+
+      <!-- 카메라 리그: 행성들을 위에서 내려다보는 하이앵글 시점 및 스크롤 줌 -->
+      <a-entity id="camera-rig" position="0 14 18" rotation="-38 0 0" scroll-zoom>
+        <a-camera position="0 0 0"></a-camera>
+      </a-entity>
+
+      <!-- 행성 시스템 -->
+      <a-entity id="solar-system" position="0 0 0">
+        <!-- 중심 회전 복합체 (블랙 큐브 + 6면의 흰색 직사각형 건물군) -->
+        <a-entity
+          id="central-monolith"
+          animation="property: rotation; to: 0 360 0; loop: true; dur: 22000; easing: linear;"
+        >
+          <!-- 중심의 거대한 검은 정육면체 (4.8x4.8x4.8) -->
+          <a-box
+            id="central-cube"
+            class="clickable"
+            data-name="중심 블랙 큐브"
+            position="0 0 0"
+            width="4.8"
+            height="4.8"
+            depth="4.8"
+            color="#050505"
+            material="metalness: 0.85; roughness: 0.2; emissive: #020617; emissiveIntensity: 0.3;"
+          ></a-box>
+
+          <!-- 1. 윗면 (+Y) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-top" position="0 2.4 0" data-name="큐브 윗면 (+Y)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="top" data-name="큐브 윗면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="top" data-name="큐브 윗면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="top" data-name="큐브 윗면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+
+          <!-- 2. 아랫면 (-Y) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-bottom" position="0 -2.4 0" rotation="180 0 0" data-name="큐브 아랫면 (-Y)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="bottom" data-name="큐브 아랫면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="bottom" data-name="큐브 아랫면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="bottom" data-name="큐브 아랫면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+
+          <!-- 3. 앞면 (+Z) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-front" position="0 0 2.4" rotation="90 0 0" data-name="큐브 앞면 (+Z)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="front" data-name="큐브 앞면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="front" data-name="큐브 앞면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="front" data-name="큐브 앞면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+
+          <!-- 4. 뒷면 (-Z) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-back" position="0 0 -2.4" rotation="-90 0 0" data-name="큐브 뒷면 (-Z)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="back" data-name="큐브 뒷면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="back" data-name="큐브 뒷면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="back" data-name="큐브 뒷면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+
+          <!-- 5. 오른쪽면 (+X) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-right" position="2.4 0 0" rotation="0 0 -90" data-name="큐브 우측면 (+X)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="right" data-name="큐브 우측면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="right" data-name="큐브 우측면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="right" data-name="큐브 우측면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+
+          <!-- 6. 왼쪽면 (-X) 실제 아파트 단지 스케일 건물군 -->
+          <a-entity id="face-left" position="-2.4 0 0" rotation="0 0 90" data-name="큐브 좌측면 (-X)">
+            <a-entity class="camera-anchor" position="0.0 0.08 0.65"></a-entity>
+            <a-box class="clickable" data-face="left" data-name="큐브 좌측면 101동" position="-0.65 0.95 -0.3" width="1.0" height="1.9" depth="0.8" color="#ffffff" material="roughness: 0.3; metalness: 0.15;"></a-box>
+            <a-box class="clickable" data-face="left" data-name="큐브 좌측면 102동" position="0.6 0.8 -0.45" width="1.4" height="1.6" depth="0.7" color="#f8fafc" material="roughness: 0.35; metalness: 0.1;"></a-box>
+            <a-box class="clickable" data-face="left" data-name="큐브 좌측면 103동" position="0.75 0.6 0.45" width="0.8" height="1.2" depth="0.7" color="#f1f5f9" material="roughness: 0.3; metalness: 0.15;"></a-box>
+          </a-entity>
+        </a-entity>
+
+        <!-- 첫 번째 행성 (흰색) - 속도 0.7배 감속 -->
+        <a-entity
+          animation="property: rotation; to: 0 360 0; loop: true; dur: 6430; easing: linear;"
+        >
+          <a-sphere
+            id="planet-white"
+            class="clickable"
+            data-name="흰색 행성"
+            position="4.8 0.25 0"
+            radius="0.55"
+            color="#ffffff"
+            material="metalness: 0.15; roughness: 0.65;"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 3140; easing: linear;"
+          ></a-sphere>
+        </a-entity>
+
+        <!-- 두 번째 행성 (연한 하늘색) - 신규 추가 -->
+        <a-entity
+          rotation="-6 0 0"
+          animation="property: rotation; to: -6 360 0; loop: true; dur: 8200; easing: linear;"
+        >
+          <a-sphere
+            id="planet-sky"
+            class="clickable"
+            data-name="연한 하늘색 행성"
+            position="6.2 -0.2 0"
+            radius="0.44"
+            color="#7dd3fc"
+            material="metalness: 0.2; roughness: 0.5;"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 3600; easing: linear;"
+          ></a-sphere>
+        </a-entity>
+
+        <!-- 세 번째 행성 (회색) - 속도 0.7배 감속 -->
+        <a-entity
+          rotation="14 0 0"
+          animation="property: rotation; to: 14 360 0; loop: true; dur: 10000; easing: linear;"
+        >
+          <a-sphere
+            id="planet-gray"
+            class="clickable"
+            data-name="회색 행성"
+            position="7.6 -0.3 0"
+            radius="0.5"
+            color="#9ca3af"
+            material="metalness: 0.2; roughness: 0.55;"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 4300; easing: linear;"
+          ></a-sphere>
+        </a-entity>
+
+        <!-- 네 번째 행성 (보라색) - 속도 0.7배 감속 -->
+        <a-entity
+          rotation="-10 0 0"
+          animation="property: rotation; to: -10 360 0; loop: true; dur: 14600; easing: linear;"
+        >
+          <a-sphere
+            id="planet-purple"
+            class="clickable"
+            data-name="보라색 행성"
+            position="9.0 0.4 0"
+            radius="0.38"
+            color="#a855f7"
+            material="metalness: 0.18; roughness: 0.6;"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 5400; easing: linear;"
+          ></a-sphere>
+        </a-entity>
+
+        <!-- 다섯 번째 행성 (어두운 노란색) - 신규 추가 -->
+        <a-entity
+          rotation="9 0 0"
+          animation="property: rotation; to: 9 360 0; loop: true; dur: 19500; easing: linear;"
+        >
+          <a-sphere
+            id="planet-yellow"
+            class="clickable"
+            data-name="어두운 노란색 행성"
+            position="10.5 -0.3 0"
+            radius="0.64"
+            color="#ca8a04"
+            material="metalness: 0.25; roughness: 0.6;"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 6500; easing: linear;"
+          ></a-sphere>
+        </a-entity>
+      </a-entity>
+    </a-scene>
+  </body>
+</html>
